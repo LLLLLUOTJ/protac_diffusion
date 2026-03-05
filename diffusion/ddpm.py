@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import sys
+import time
+
 import torch
 from torch import Tensor, nn
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover - optional dependency
+    tqdm = None
 
 
 class DDPM(nn.Module):
@@ -66,10 +73,45 @@ class DDPM(nn.Module):
         return model_mean + torch.sqrt(torch.clamp(posterior_var_t, min=1e-20)) * noise
 
     @torch.no_grad()
-    def sample(self, shape: tuple[int, int, int, int], device: str | None = None) -> Tensor:
+    def sample(
+        self,
+        shape: tuple[int, int, int, int],
+        device: str | None = None,
+        show_progress: bool = True,
+        log_every: int = 20,
+    ) -> Tensor:
         actual_device = device or self.device_name
         x = torch.randn(shape, device=actual_device)
-        for step in reversed(range(self.timesteps)):
+        start = time.perf_counter()
+        total = self.timesteps
+        every = max(1, log_every)
+        iterator = reversed(range(self.timesteps))
+        use_tqdm = bool(show_progress and tqdm is not None)
+        if use_tqdm:
+            iterator = tqdm(
+                iterator,
+                total=total,
+                desc="sample",
+                dynamic_ncols=True,
+                leave=True,
+                disable=not sys.stdout.isatty(),
+            )
+        for index, step in enumerate(iterator, start=1):
             t = torch.full((shape[0],), step, device=actual_device, dtype=torch.long)
             x = self.p_sample(x, t)
+            if show_progress and (index == 1 or index % every == 0 or index == total):
+                elapsed = time.perf_counter() - start
+                avg = elapsed / index
+                eta = avg * max(total - index, 0)
+                progress = (index / total) * 100.0
+                if use_tqdm:
+                    iterator.set_postfix(t=step, eta_s=f"{eta:.1f}")
+                else:
+                    print(
+                        f"[sample] step={index}/{total} ({progress:.1f}%) "
+                        f"t={step} elapsed={elapsed:.1f}s eta={eta:.1f}s",
+                        flush=True,
+                    )
+        if use_tqdm:
+            iterator.close()
         return x

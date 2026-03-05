@@ -14,10 +14,12 @@ def sample_batch(diffusion, config: TrainConfig, out_path: str = "samples.pt") -
     x = diffusion.sample(
         shape=(config.sample_batch_size, config.channels, config.image_size, config.image_size),
         device=config.device,
+        show_progress=config.progress_bar,
+        log_every=config.sample_log_every,
     )
     x = torch.clamp((x + 1.0) * 0.5, 0.0, 1.0)
     torch.save(x.cpu(), out_path)
-    print(f"[sample] saved to {out_path}, shape={tuple(x.shape)}")
+    print(f"[sample] saved to {out_path}, shape={tuple(x.shape)}", flush=True)
 
 
 def save_tensor_images(x: torch.Tensor, out_dir: str, prefix: str = "sample") -> list[str]:
@@ -46,9 +48,11 @@ def sample_and_save_images(diffusion, config: TrainConfig, out_dir: str | None =
     x = diffusion.sample(
         shape=(config.sample_batch_size, config.channels, config.image_size, config.image_size),
         device=config.device,
+        show_progress=config.progress_bar,
+        log_every=config.sample_log_every,
     )
     x = torch.clamp((x + 1.0) * 0.5, 0.0, 1.0)
     target_dir = out_dir or config.sample_output_dir
     paths = save_tensor_images(x, out_dir=target_dir)
-    print(f"[sample] saved {len(paths)} images to {target_dir}")
+    print(f"[sample] saved {len(paths)} images to {target_dir}", flush=True)
     return paths

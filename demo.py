@@ -30,20 +30,32 @@ def build_dataloader(config: TrainConfig) -> DataLoader:
         raise ValueError(f"当前demo仅实现image最小闭环, 收到: {config.modality}")
 
     dataset = build_image_dataset(config)
-    return DataLoader(
-        dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        num_workers=config.num_workers,
-        collate_fn=collate_diffusion_samples,
-        drop_last=True,
+    print(
+        f"[data] source={config.image_source} size={len(dataset)} "
+        f"batch_size={config.batch_size} workers={config.num_workers}",
+        flush=True,
     )
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": config.batch_size,
+        "shuffle": True,
+        "num_workers": config.num_workers,
+        "collate_fn": collate_diffusion_samples,
+        "drop_last": True,
+        "pin_memory": bool(config.pin_memory and str(config.device).startswith("cuda")),
+    }
+    if config.num_workers > 0:
+        loader_kwargs["prefetch_factor"] = config.prefetch_factor
+        loader_kwargs["persistent_workers"] = config.persistent_workers
+    return DataLoader(**loader_kwargs)
 
 
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     config = TrainConfig(device=device)
     set_seed(config.seed)
+    if config.device.startswith("cuda"):
+        torch.backends.cudnn.benchmark = True
 
     dataloader = build_dataloader(config)
 
@@ -68,7 +80,7 @@ def main() -> None:
         },
         checkpoint_path,
     )
-    print(f"[checkpoint] saved to {checkpoint_path}")
+    print(f"[checkpoint] saved to {checkpoint_path}", flush=True)
 
     sample_batch(diffusion=diffusion, config=config, out_path="samples.pt")
     sample_and_save_images(diffusion=diffusion, config=config)
