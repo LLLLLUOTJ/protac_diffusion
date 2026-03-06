@@ -18,6 +18,8 @@ Default is CUDA 12.1:
 bash scripts/setup_env.sh
 ```
 
+The setup script now fails fast if `TORCH_VARIANT=cuda121` but `torch.cuda.is_available()` is still `False`.
+
 CPU-only:
 
 ```bash
@@ -53,6 +55,12 @@ DEVICE=cuda \
 NODE_EPOCHS=20 \
 EDGE_EPOCHS=20 \
 bash scripts/train_linker_diffusion.sh
+```
+
+On a multi-GPU server, pin one card explicitly:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 DEVICE=cuda bash scripts/train_linker_diffusion.sh
 ```
 
 ## 3) Build Weak-Anchor Dataset
@@ -95,6 +103,19 @@ Outputs:
 
 ```bash
 bash scripts/run_server_pipeline.sh
+```
+
+For background execution:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 DEVICE=cuda \
+nohup bash scripts/run_server_pipeline.sh > run_pipeline.log 2>&1 &
+```
+
+Check progress:
+
+```bash
+tail -f run_pipeline.log
 ```
 
 ## Smoke Example
