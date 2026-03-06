@@ -1,0 +1,11 @@
+name: diffusion-server
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - rdkit=2025.09.*
+  - pandas>=2.2
+  - tqdm>=4.67
+  - pytest>=8
+  - pip
