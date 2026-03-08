@@ -18,16 +18,43 @@ else
   conda env create -n "${CONDA_ENV_NAME}" -f "${ENV_FILE}"
 fi
 
+echo "[env] removing pip-installed torch packages if present"
+run_in_env python -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
+conda remove -y -n "${CONDA_ENV_NAME}" pytorch pytorch-cuda cpuonly torchvision torchaudio >/dev/null 2>&1 || true
+
+install_torch_with_pip() {
+  case "${VARIANT}" in
+    cpu)
+      echo "[env] pip fallback: installing CPU PyTorch"
+      run_in_env python -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+      ;;
+    cuda121)
+      echo "[env] pip fallback: installing CUDA 12.1 PyTorch"
+      run_in_env python -m pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cu121 \
+        torch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2
+      ;;
+    *)
+      echo "[error] unsupported TORCH_VARIANT=${VARIANT}. Use cpu or cuda121." >&2
+      exit 1
+      ;;
+  esac
+}
+
 case "${VARIANT}" in
   cpu)
     echo "[env] installing CPU PyTorch"
-    conda remove -y -n "${CONDA_ENV_NAME}" pytorch pytorch-cuda cpuonly torchvision torchaudio >/dev/null 2>&1 || true
-    conda install -y -n "${CONDA_ENV_NAME}" --override-channels -c pytorch pytorch=2.2.\* cpuonly
+    if ! conda install -y -n "${CONDA_ENV_NAME}" --override-channels -c pytorch pytorch=2.2.\* cpuonly; then
+      install_torch_with_pip
+    fi
     ;;
   cuda121)
     echo "[env] installing CUDA 12.1 PyTorch"
-    conda remove -y -n "${CONDA_ENV_NAME}" pytorch pytorch-cuda cpuonly torchvision torchaudio >/dev/null 2>&1 || true
-    conda install -y -n "${CONDA_ENV_NAME}" --override-channels -c pytorch -c nvidia pytorch=2.2.\* pytorch-cuda=12.1
+    if ! conda install -y -n "${CONDA_ENV_NAME}" --override-channels -c pytorch -c nvidia pytorch=2.2.\* pytorch-cuda=12.1; then
+      install_torch_with_pip
+    fi
     ;;
   *)
     echo "[error] unsupported TORCH_VARIANT=${VARIANT}. Use cpu or cuda121." >&2

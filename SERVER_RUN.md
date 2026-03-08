@@ -8,6 +8,7 @@
 - build weak-anchor data: [scripts/build_weak_anchor_data.sh](/Users/lintianjian/diffusion/scripts/build_weak_anchor_data.sh)
 - train node + edge diffusion: [scripts/train_linker_diffusion.sh](/Users/lintianjian/diffusion/scripts/train_linker_diffusion.sh)
 - sample from trained checkpoints: [scripts/sample_linker.sh](/Users/lintianjian/diffusion/scripts/sample_linker.sh)
+- analyze train log: [scripts/analyze_train_log.sh](/Users/lintianjian/diffusion/scripts/analyze_train_log.sh)
 - end-to-end wrapper: [scripts/run_server_pipeline.sh](/Users/lintianjian/diffusion/scripts/run_server_pipeline.sh)
 
 ## 1) Create Environment
@@ -44,7 +45,10 @@ DEVICE=auto
 MIN_LINKER_RATIO_PCT=15
 MAX_LINKER_RATIO_PCT=35
 NODE_EPOCHS=100
-EDGE_EPOCHS=100
+NODE_PATIENCE=15
+TRAIN_EDGE=true
+SAMPLE_MODE=joint
+EVAL_MODE=joint
 ```
 
 You can also override per run without editing the file:
@@ -82,6 +86,12 @@ Outputs:
 bash scripts/train_linker_diffusion.sh
 ```
 
+Defaults now follow the current project focus:
+
+- `TRAIN_NODE=true`
+- `TRAIN_EDGE=true`
+- `NODE_PATIENCE=15`
+
 Outputs:
 
 - node checkpoint: `checkpoints/linker_node_diffusion.pt`
@@ -93,13 +103,47 @@ Outputs:
 bash scripts/sample_linker.sh
 ```
 
+Default mode is `joint`.
+If you want a more conservative node-only sampler that reuses the source linker topology:
+
+```bash
+SAMPLE_MODE=node_only bash scripts/sample_linker.sh
+```
+
 Outputs:
 
 - samples csv: `outputs/linker_sampling/generated_samples.csv`
 - samples json: `outputs/linker_sampling/generated_samples.json`
+- summary json: `outputs/linker_sampling/summary.json`
 - optional PNGs when `SAMPLE_SAVE_IMAGES=true`
 
-## 6) End-to-End
+## 6) Evaluate Generation
+
+```bash
+bash scripts/evaluate_linker_generation.sh
+```
+
+Outputs:
+
+- `outputs/linker_eval/all_generations.csv`
+- `outputs/linker_eval/per_source_summary.csv`
+- `outputs/linker_eval/summary.json`
+- `outputs/linker_eval/evaluation_overview.png`
+
+## 7) Analyze Training Log
+
+```bash
+bash scripts/analyze_train_log.sh
+```
+
+Outputs:
+
+- `outputs/train_log_analysis/loss_curves.png`
+- `outputs/train_log_analysis/diagnostics.png`
+- `outputs/train_log_analysis/summary.json`
+- `outputs/train_log_analysis/REPORT.md`
+
+## 8) End-to-End
 
 ```bash
 bash scripts/run_server_pipeline.sh

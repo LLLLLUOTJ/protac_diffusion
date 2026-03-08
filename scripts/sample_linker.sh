@@ -12,7 +12,7 @@ SAMPLE_ARGS=(
   python "${PROJECT_ROOT}/sample_linker.py"
   --tensor-pt "${WEAK_ANCHOR_TENSOR_PT}"
   --node-ckpt "${NODE_CKPT}"
-  --edge-ckpt "${EDGE_CKPT}"
+  --mode "${SAMPLE_MODE}"
   --sample-index "${SAMPLE_INDEX}"
   --num-samples "${NUM_GENERATIONS}"
   --edge-threshold "${EDGE_THRESHOLD}"
@@ -21,6 +21,10 @@ SAMPLE_ARGS=(
   --log-every "${SAMPLE_LOG_EVERY}"
   --out-dir "${SAMPLE_OUT_DIR}"
 )
+
+if [[ "${SAMPLE_MODE}" == "joint" ]]; then
+  SAMPLE_ARGS+=(--edge-ckpt "${EDGE_CKPT}")
+fi
 
 if [[ -n "${SAMPLE_ID}" ]]; then
   SAMPLE_ARGS+=(--sample-id "${SAMPLE_ID}")

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 import random
+import time
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -174,9 +177,21 @@ def main() -> None:
     )
 
     best_val = float("inf")
+    best_epoch = 0
+    history: list[Dict[str, float | int]] = []
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.perf_counter()
         train_metrics = run_epoch(diffusion, train_loader, optimizer, device, timesteps=args.timesteps)
         val_metrics = run_epoch(diffusion, val_loader, None, device, timesteps=args.timesteps)
+        epoch_time = time.perf_counter() - epoch_start
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": float(train_metrics["loss"]),
+                "val_loss": float(val_metrics["loss"]),
+                "epoch_time_s": float(epoch_time),
+            }
+        )
         print(
             f"[epoch {epoch:03d}] train_loss={train_metrics['loss']:.4f} "
             f"val_loss={val_metrics['loss']:.4f}",
@@ -184,6 +199,7 @@ def main() -> None:
         )
         if val_metrics["loss"] < best_val:
             best_val = val_metrics["loss"]
+            best_epoch = epoch
             torch.save(
                 {
                     "model_state_dict": diffusion.model.state_dict(),
@@ -205,6 +221,35 @@ def main() -> None:
                 out_path,
             )
             print(f"[checkpoint] saved {out_path}", flush=True)
+
+    history_path = out_path.with_suffix(".history.csv")
+    with history_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss", "epoch_time_s"])
+        writer.writeheader()
+        writer.writerows(history)
+
+    summary_path = out_path.with_suffix(".summary.json")
+    total_time = sum(float(item["epoch_time_s"]) for item in history)
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "checkpoint_path": str(out_path),
+                "history_path": str(history_path),
+                "num_epochs": len(history),
+                "best_epoch": best_epoch,
+                "best_val_loss": best_val,
+                "final_train_loss": history[-1]["train_loss"] if history else None,
+                "final_val_loss": history[-1]["val_loss"] if history else None,
+                "total_epoch_time_s": total_time,
+                "avg_epoch_time_s": (total_time / len(history)) if history else None,
+                "train_config": vars(args),
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+    print(f"[history] csv={history_path}", flush=True)
+    print(f"[summary] json={summary_path}", flush=True)
 
 
 if __name__ == "__main__":

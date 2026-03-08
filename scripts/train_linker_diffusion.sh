@@ -22,6 +22,8 @@ NODE_ARGS=(
   --beta-start "${NODE_BETA_START}"
   --beta-end "${NODE_BETA_END}"
   --val-ratio "${NODE_VAL_RATIO}"
+  --patience "${NODE_PATIENCE}"
+  --min-delta "${NODE_MIN_DELTA}"
   --seed "${SEED}"
   --device "${DEVICE}"
   --out "${NODE_CKPT}"
@@ -52,11 +54,15 @@ if [[ -n "${EDGE_MAX_SAMPLES}" ]]; then
   EDGE_ARGS+=(--max-samples "${EDGE_MAX_SAMPLES}")
 fi
 
-echo "[run] training node diffusion"
-run_in_env "${NODE_ARGS[@]}"
+if [[ "${TRAIN_NODE}" == "true" ]]; then
+  echo "[run] training node diffusion"
+  run_in_env "${NODE_ARGS[@]}"
+fi
 
-echo "[run] training edge diffusion"
-run_in_env "${EDGE_ARGS[@]}"
+if [[ "${TRAIN_EDGE}" == "true" ]]; then
+  echo "[run] training edge diffusion"
+  run_in_env "${EDGE_ARGS[@]}"
+fi
 
 echo "[done] node_ckpt=${NODE_CKPT}"
 echo "[done] edge_ckpt=${EDGE_CKPT}"

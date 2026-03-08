@@ -33,7 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sample anchored PROTAC linkers conditioned on left/right fragments")
     parser.add_argument("--tensor-pt", type=str, default="data/processed/weak_anchor_tensors.pt")
     parser.add_argument("--node-ckpt", type=str, default="checkpoints/linker_node_diffusion_smoke.pt")
-    parser.add_argument("--edge-ckpt", type=str, default="checkpoints/linker_edge_diffusion_smoke.pt")
+    parser.add_argument("--edge-ckpt", type=str, default="", help="optional edge diffusion checkpoint; only needed for joint mode")
+    parser.add_argument("--mode", type=str, default="node_only", choices=["node_only", "joint"])
     parser.add_argument("--sample-index", type=int, default=0)
     parser.add_argument("--sample-id", type=str, default=None)
     parser.add_argument("--num-samples", type=int, default=4)
@@ -200,6 +201,15 @@ def sample_edges(
     )
 
 
+def source_edge_tensor(batch: Dict[str, Any], device: torch.device) -> torch.Tensor:
+    linker_edge = move_to_device(batch["linker_edge"], device)
+    return project_edge_features(
+        linker_edge["fixed_values"],
+        fixed_mask=linker_edge["fixed_mask"],
+        fixed_values=linker_edge["fixed_values"],
+    )
+
+
 def decode_results(
     batch: Dict[str, Any],
     sampled_node_x: torch.Tensor,
@@ -263,6 +273,7 @@ def write_outputs(rows: List[Dict[str, Any]], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     csv_path = out_dir / "generated_samples.csv"
     json_path = out_dir / "generated_samples.json"
+    summary_path = out_dir / "summary.json"
 
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -271,6 +282,20 @@ def write_outputs(rows: List[Dict[str, Any]], out_dir: Path) -> None:
 
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2, ensure_ascii=False)
+
+    anchored = [row["generated_anchored_linker_smiles"] for row in rows if row["generated_anchored_linker_smiles"]]
+    full = [row["generated_full_smiles"] for row in rows if row["generated_full_smiles"]]
+    summary = {
+        "num_requested": len(rows),
+        "num_decoded_anchored": len(anchored),
+        "num_assembled_full": len(full),
+        "decode_rate": (len(anchored) / len(rows)) if rows else 0.0,
+        "assembly_rate": (len(full) / len(rows)) if rows else 0.0,
+        "unique_anchored": len(set(anchored)),
+        "unique_full": len(set(full)),
+    }
+    with summary_path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
 
 
 def main() -> None:
@@ -284,7 +309,7 @@ def main() -> None:
 
     print(
         f"[sample] device={device} source_sample_id={source_sample['sample_id']} "
-        f"num_samples={args.num_samples}",
+        f"num_samples={args.num_samples} mode={args.mode}",
         flush=True,
     )
     print(
@@ -295,7 +320,6 @@ def main() -> None:
     )
 
     node_diffusion = load_node_diffusion(args.node_ckpt, device=device)
-    edge_diffusion = load_edge_diffusion(args.edge_ckpt, device=device)
 
     sampled_node_x = sample_nodes(
         node_diffusion,
@@ -304,15 +328,22 @@ def main() -> None:
         show_progress=args.show_progress,
         log_every=args.log_every,
     )
-    sampled_edge_x = sample_edges(
-        edge_diffusion,
-        batch=batch,
-        sampled_node_x=sampled_node_x,
-        device=device,
-        edge_threshold=args.edge_threshold,
-        show_progress=args.show_progress,
-        log_every=args.log_every,
-    )
+
+    if args.mode == "joint":
+        if not args.edge_ckpt:
+            raise ValueError("--edge-ckpt is required when --mode joint")
+        edge_diffusion = load_edge_diffusion(args.edge_ckpt, device=device)
+        sampled_edge_x = sample_edges(
+            edge_diffusion,
+            batch=batch,
+            sampled_node_x=sampled_node_x,
+            device=device,
+            edge_threshold=args.edge_threshold,
+            show_progress=args.show_progress,
+            log_every=args.log_every,
+        )
+    else:
+        sampled_edge_x = source_edge_tensor(batch=batch, device=device)
 
     out_dir = Path(args.out_dir)
     rows = decode_results(
