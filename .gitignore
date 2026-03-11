@@ -8,3 +8,12 @@ checkpoints/
 outputs/
 data/processed/
 samples.pt
+
+# training/runtime artifacts
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+*.onnx
+*.log

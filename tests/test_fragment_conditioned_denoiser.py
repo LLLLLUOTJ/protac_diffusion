@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from typing import Any
 
 import torch
 from rdkit import Chem
@@ -74,6 +75,27 @@ def _build_batch(tmp_path):
     serialize_weak_anchor_tensor_dataset(ds, str(pt_path), include_pair_mask=True)
     pt_ds = WeakAnchorTensorPTDataset(str(pt_path))
     return collate_weak_anchor_diffusion_batch([pt_ds[0], pt_ds[1]])
+
+
+def _clone_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            out[key] = value.clone()
+        elif isinstance(value, dict):
+            out[key] = _clone_batch(value)
+        elif isinstance(value, list):
+            out[key] = list(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _batch_with_modified_fragment_features(batch: dict[str, Any]) -> dict[str, Any]:
+    out = _clone_batch(batch)
+    out["left_graph"]["x"] = torch.zeros_like(out["left_graph"]["x"])
+    out["right_graph"]["x"] = torch.full_like(out["right_graph"]["x"], fill_value=3.0)
+    return out
 
 def test_fragment_conditioned_denoiser_forward_shape(tmp_path) -> None:
     batch = _build_batch(tmp_path)
@@ -149,3 +171,68 @@ def test_ddpm_p_losses_accepts_edge_model_kwargs(tmp_path) -> None:
 
     assert torch.isfinite(loss)
     assert float(loss.item()) >= 0.0
+
+
+def test_node_condition_dropout_train_mode_drops_fragment_context(tmp_path) -> None:
+    batch = _build_batch(tmp_path)
+    changed = _batch_with_modified_fragment_features(batch)
+
+    model = FragmentConditionedNodeDenoiser(
+        in_dim=4,
+        hidden_dim=64,
+        num_layers=3,
+        dropout=0.0,
+        condition_dropout=1.0,
+    )
+    model.train()
+
+    t = torch.tensor([3], dtype=torch.long)
+    out_a = model(
+        batch["linker_node"]["x_start"],
+        t,
+        linker_graph=batch["linker_graph"],
+        left_graph=batch["left_graph"],
+        right_graph=batch["right_graph"],
+    )
+    out_b = model(
+        changed["linker_node"]["x_start"],
+        t,
+        linker_graph=changed["linker_graph"],
+        left_graph=changed["left_graph"],
+        right_graph=changed["right_graph"],
+    )
+
+    assert torch.allclose(out_a, out_b, atol=1e-6, rtol=1e-6)
+
+
+def test_edge_condition_dropout_train_mode_drops_fragment_context(tmp_path) -> None:
+    batch = _build_batch(tmp_path)
+    changed = _batch_with_modified_fragment_features(batch)
+
+    model = FragmentConditionedEdgeDenoiser(
+        node_in_dim=4,
+        edge_in_dim=4,
+        hidden_dim=64,
+        num_layers=3,
+        dropout=0.0,
+        condition_dropout=1.0,
+    )
+    model.train()
+
+    t = torch.tensor([3], dtype=torch.long)
+    out_a = model(
+        batch["linker_edge"]["x_start"],
+        t,
+        linker_graph=batch["linker_graph"],
+        left_graph=batch["left_graph"],
+        right_graph=batch["right_graph"],
+    )
+    out_b = model(
+        changed["linker_edge"]["x_start"],
+        t,
+        linker_graph=changed["linker_graph"],
+        left_graph=changed["left_graph"],
+        right_graph=changed["right_graph"],
+    )
+
+    assert torch.allclose(out_a, out_b, atol=1e-6, rtol=1e-6)

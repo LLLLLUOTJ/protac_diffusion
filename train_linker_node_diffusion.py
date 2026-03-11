@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--condition-dropout", type=float, default=0.1, help="Probability of dropping fragment condition per graph")
     parser.add_argument("--timesteps", type=int, default=200)
     parser.add_argument("--beta-start", type=float, default=1e-4)
     parser.add_argument("--beta-end", type=float, default=0.02)
@@ -153,6 +154,7 @@ def main() -> None:
         hidden_dim=args.hidden_dim,
         num_layers=args.layers,
         dropout=args.dropout,
+        condition_dropout=args.condition_dropout,
     )
     diffusion = DDPM(
         model=model,
@@ -174,7 +176,7 @@ def main() -> None:
     )
     print(
         f"[train] device={device} batch_size={args.batch_size} hidden_dim={args.hidden_dim} "
-        f"layers={args.layers} timesteps={args.timesteps}",
+        f"layers={args.layers} timesteps={args.timesteps} condition_dropout={args.condition_dropout}",
         flush=True,
     )
 
@@ -212,6 +214,7 @@ def main() -> None:
                         "hidden_dim": args.hidden_dim,
                         "num_layers": args.layers,
                         "dropout": args.dropout,
+                        "condition_dropout": args.condition_dropout,
                     },
                     "diffusion_config": {
                         "timesteps": args.timesteps,

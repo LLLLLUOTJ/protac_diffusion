@@ -28,6 +28,28 @@ def mean_pool_by_batch(x: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
     return pooled / counts.clamp(min=1.0)
 
 
+def apply_condition_dropout(
+    left_ctx: torch.Tensor,
+    right_ctx: torch.Tensor,
+    *,
+    drop_prob: float,
+    training: bool,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Drop fragment conditioning per graph, keeping time conditioning untouched."""
+
+    if left_ctx.shape != right_ctx.shape:
+        raise ValueError("left_ctx and right_ctx must share shape for condition dropout")
+    if drop_prob <= 0.0 or not training:
+        return left_ctx, right_ctx
+
+    if drop_prob >= 1.0:
+        keep_mask = left_ctx.new_zeros((left_ctx.shape[0], 1))
+    else:
+        keep_prob = 1.0 - drop_prob
+        keep_mask = (torch.rand((left_ctx.shape[0], 1), device=left_ctx.device) < keep_prob).to(left_ctx.dtype)
+    return left_ctx * keep_mask, right_ctx * keep_mask
+
+
 class FragmentGraphEncoder(nn.Module):
     """Encode a fragment graph into one embedding per graph."""
 
@@ -69,11 +91,14 @@ class FragmentConditionedNodeDenoiser(nn.Module):
         num_layers: int = 4,
         time_dim: int = 128,
         dropout: float = 0.1,
+        condition_dropout: float = 0.0,
         node_type_classes: int = 3,
     ) -> None:
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be >= 1")
+        if not (0.0 <= condition_dropout <= 1.0):
+            raise ValueError("condition_dropout must be in [0, 1]")
 
         self.time_emb = SinusoidalTimeEmbedding(time_dim)
         self.time_proj = nn.Sequential(
@@ -98,6 +123,7 @@ class FragmentConditionedNodeDenoiser(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.out_proj = nn.Linear(hidden_dim, in_dim)
         self.node_type_classes = node_type_classes
+        self.condition_dropout = float(condition_dropout)
 
     def _time_per_graph(self, t: torch.Tensor, num_graphs: int) -> torch.Tensor:
         time_h = self.time_proj(self.time_emb(t))
@@ -137,6 +163,12 @@ class FragmentConditionedNodeDenoiser(nn.Module):
         )
         if left_ctx.shape[0] != num_graphs or right_ctx.shape[0] != num_graphs:
             raise ValueError("Fragment graph counts must match linker graph count")
+        left_ctx, right_ctx = apply_condition_dropout(
+            left_ctx,
+            right_ctx,
+            drop_prob=self.condition_dropout,
+            training=self.training,
+        )
 
         time_ctx = self._time_per_graph(t, num_graphs=num_graphs)
         graph_ctx = self.condition_proj(torch.cat([left_ctx, right_ctx, time_ctx], dim=1))
@@ -172,11 +204,14 @@ class FragmentConditionedEdgeDenoiser(nn.Module):
         num_layers: int = 4,
         time_dim: int = 128,
         dropout: float = 0.1,
+        condition_dropout: float = 0.0,
         node_type_classes: int = 3,
     ) -> None:
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be >= 1")
+        if not (0.0 <= condition_dropout <= 1.0):
+            raise ValueError("condition_dropout must be in [0, 1]")
 
         self.time_emb = SinusoidalTimeEmbedding(time_dim)
         self.time_proj = nn.Sequential(
@@ -215,6 +250,7 @@ class FragmentConditionedEdgeDenoiser(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.out_proj = nn.Linear(hidden_dim, edge_in_dim)
         self.node_type_classes = node_type_classes
+        self.condition_dropout = float(condition_dropout)
 
     def _time_per_graph(self, t: torch.Tensor, num_graphs: int) -> torch.Tensor:
         time_h = self.time_proj(self.time_emb(t))
@@ -244,6 +280,12 @@ class FragmentConditionedEdgeDenoiser(nn.Module):
         )
         if left_ctx.shape[0] != num_graphs or right_ctx.shape[0] != num_graphs:
             raise ValueError("Fragment graph counts must match linker graph count")
+        left_ctx, right_ctx = apply_condition_dropout(
+            left_ctx,
+            right_ctx,
+            drop_prob=self.condition_dropout,
+            training=self.training,
+        )
         time_ctx = self._time_per_graph(t, num_graphs=num_graphs)
         return self.condition_proj(torch.cat([left_ctx, right_ctx, time_ctx], dim=1))
 
