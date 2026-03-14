@@ -8,8 +8,13 @@
 - build weak-anchor data: [scripts/build_weak_anchor_data.sh](/Users/lintianjian/diffusion/scripts/build_weak_anchor_data.sh)
 - train node + edge diffusion: [scripts/train_linker_diffusion.sh](/Users/lintianjian/diffusion/scripts/train_linker_diffusion.sh)
 - sample from trained checkpoints: [scripts/sample_linker.sh](/Users/lintianjian/diffusion/scripts/sample_linker.sh)
+- build token diffusion data: [scripts/build_weak_anchor_token_data.sh](/Users/lintianjian/diffusion/scripts/build_weak_anchor_token_data.sh)
+- train token diffusion: [scripts/train_linker_token_diffusion.sh](/Users/lintianjian/diffusion/scripts/train_linker_token_diffusion.sh)
+- sample token diffusion: [scripts/sample_linker_token.sh](/Users/lintianjian/diffusion/scripts/sample_linker_token.sh)
+- evaluate token diffusion: [scripts/evaluate_linker_token_generation.sh](/Users/lintianjian/diffusion/scripts/evaluate_linker_token_generation.sh)
 - analyze train log: [scripts/analyze_train_log.sh](/Users/lintianjian/diffusion/scripts/analyze_train_log.sh)
 - end-to-end wrapper: [scripts/run_server_pipeline.sh](/Users/lintianjian/diffusion/scripts/run_server_pipeline.sh)
+- token end-to-end wrapper: [scripts/run_token_server_pipeline.sh](/Users/lintianjian/diffusion/scripts/run_token_server_pipeline.sh)
 
 ## 1) Create Environment
 
@@ -119,6 +124,49 @@ Outputs:
 - summary json: `outputs/linker_sampling/summary.json`
 - optional PNGs when `SAMPLE_SAVE_IMAGES=true`
 
+## Token Version
+
+This is the new downstream path where:
+
+- left/right fragments are still graph-conditioned
+- linker is no longer trained as atom `node + edge`
+- linker is represented as an oriented token embedding sequence
+
+Build token data and embeddings:
+
+```bash
+bash scripts/build_weak_anchor_token_data.sh
+```
+
+Train token diffusion:
+
+```bash
+bash scripts/train_linker_token_diffusion.sh
+```
+
+Sample token diffusion:
+
+```bash
+bash scripts/sample_linker_token.sh
+```
+
+Evaluate token diffusion:
+
+```bash
+bash scripts/evaluate_linker_token_generation.sh
+```
+
+Most relevant outputs:
+
+- tokenized weak-anchor csv: `data/processed/weak_anchor_tokenized_oriented.csv`
+- token embeddings: `data/processed/task/oriented_token_embedding/`
+  - trained with `PAD=<PAD>` and `pad_to_length=23`
+- token tensor dataset: `data/processed/weak_anchor_token_tensors.pt`
+  - linker token sequences are padded to length `23`; overlength samples are rejected instead of truncated
+- token checkpoint: `checkpoints/linker_token_diffusion.pt`
+- token samples: `outputs/linker_token_sampling/`
+- token eval: `outputs/linker_token_eval/`
+
 ## 6) Evaluate Generation
 
 ```bash
@@ -131,6 +179,19 @@ Outputs:
 - `outputs/linker_eval/per_source_summary.csv`
 - `outputs/linker_eval/summary.json`
 - `outputs/linker_eval/evaluation_overview.png`
+
+Token version:
+
+```bash
+bash scripts/evaluate_linker_token_generation.sh
+```
+
+Outputs:
+
+- `outputs/linker_token_eval/all_generations.csv`
+- `outputs/linker_token_eval/per_source_summary.csv`
+- `outputs/linker_token_eval/summary.json`
+- `outputs/linker_token_eval/evaluation_overview.png`
 
 ## 7) Analyze Training Log
 
@@ -151,11 +212,24 @@ Outputs:
 bash scripts/run_server_pipeline.sh
 ```
 
+Token pipeline:
+
+```bash
+bash scripts/run_token_server_pipeline.sh
+```
+
 For background execution:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 DEVICE=cuda \
 nohup bash scripts/run_server_pipeline.sh > run_pipeline.log 2>&1 &
+```
+
+Token pipeline in background:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 DEVICE=cuda \
+nohup bash scripts/run_token_server_pipeline.sh > run_token_pipeline.log 2>&1 &
 ```
 
 Check progress:

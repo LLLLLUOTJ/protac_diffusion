@@ -114,11 +114,50 @@ def read_sequences_from_instances(instances_csv: Path) -> List[SampleSequence]:
     return rows
 
 
+def pad_sequences_to_min_length(
+    sequences: Sequence[SampleSequence],
+    *,
+    pad_to_length: int,
+    pad_token: str,
+) -> Tuple[List[SampleSequence], Dict[str, int]]:
+    if pad_to_length <= 0:
+        raise ValueError(f"pad_to_length must be positive, got {pad_to_length}")
+
+    padded_rows: List[SampleSequence] = []
+    padded_count = 0
+    unchanged_count = 0
+    overlength_count = 0
+    for sample in sequences:
+        tokens = list(sample.tokens)
+        if len(tokens) < pad_to_length:
+            tokens = tokens + [pad_token] * (pad_to_length - len(tokens))
+            padded_count += 1
+        else:
+            unchanged_count += 1
+            if len(tokens) > pad_to_length:
+                overlength_count += 1
+        padded_rows.append(
+            SampleSequence(
+                sample_id=sample.sample_id,
+                linker_id=sample.linker_id,
+                tokens=tokens,
+                sample_weight=sample.sample_weight,
+            )
+        )
+    return padded_rows, {
+        "pad_to_length": int(pad_to_length),
+        "padded_sequences": int(padded_count),
+        "unchanged_sequences": int(unchanged_count),
+        "overlength_sequences": int(overlength_count),
+    }
+
+
 def build_vocab(
     sequences: Sequence[SampleSequence],
     min_count: int = 1,
     add_unk: bool = True,
     unk_token: str = "<UNK>",
+    special_tokens: Optional[Sequence[str]] = None,
 ) -> Tuple[List[str], Dict[str, int], Dict[str, int]]:
     freq: Dict[str, int] = {}
     for sample in sequences:
@@ -126,7 +165,13 @@ def build_vocab(
             freq[token] = freq.get(token, 0) + 1
     kept = [tok for tok, count in freq.items() if count >= min_count]
     kept.sort(key=lambda t: (-freq[t], t))
-    vocab_tokens = kept[:]
+    vocab_tokens: List[str] = []
+    for token in list(special_tokens or []):
+        if token not in vocab_tokens:
+            vocab_tokens.append(token)
+    for token in kept:
+        if token not in vocab_tokens:
+            vocab_tokens.append(token)
     if add_unk and unk_token not in vocab_tokens:
         vocab_tokens.append(unk_token)
     token_to_id = {tok: i for i, tok in enumerate(vocab_tokens)}
@@ -158,18 +203,24 @@ def map_sequences_to_ids(
 def build_skipgram_pairs(
     mapped_sequences: Sequence[Tuple[List[int], float, str, str]],
     window_size: int,
+    skip_token_ids: Optional[Sequence[int]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     centers: List[int] = []
     contexts: List[int] = []
     weights: List[float] = []
+    skip_ids = set(int(x) for x in (skip_token_ids or []))
     for ids, sample_weight, _, _ in mapped_sequences:
         n = len(ids)
         for i in range(n):
             left = max(0, i - window_size)
             right = min(n, i + window_size + 1)
             center = ids[i]
+            if center in skip_ids:
+                continue
             for j in range(left, right):
                 if j == i:
+                    continue
+                if ids[j] in skip_ids:
                     continue
                 centers.append(center)
                 contexts.append(ids[j])
@@ -255,6 +306,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--add_unk", type=parse_bool, default=False)
     parser.add_argument("--unk_token", type=str, default="<UNK>")
     parser.add_argument("--l2_normalize", type=parse_bool, default=True)
+    parser.add_argument("--pad_to_length", type=int, default=0)
+    parser.add_argument("--pad_token", type=str, default="<PAD>")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--log_every", type=int, default=10)
@@ -306,20 +359,39 @@ def main() -> None:
     else:
         raise FileNotFoundError("neither tokenized_csv nor instances_csv could be loaded")
 
+    pad_stats: Dict[str, int] = {}
+    special_tokens: List[str] = []
+    pad_token = str(args.pad_token)
+    if int(args.pad_to_length) > 0:
+        sequences, pad_stats = pad_sequences_to_min_length(
+            sequences,
+            pad_to_length=int(args.pad_to_length),
+            pad_token=pad_token,
+        )
+        special_tokens.append(pad_token)
+
     vocab_tokens, token_to_id, seq_freq = build_vocab(
         sequences=sequences,
         min_count=int(args.min_count),
         add_unk=bool(args.add_unk),
         unk_token=str(args.unk_token),
+        special_tokens=special_tokens,
     )
     mapped = map_sequences_to_ids(
         sequences=sequences,
         token_to_id=token_to_id,
         unk_token=str(args.unk_token) if bool(args.add_unk) else None,
     )
+    skip_token_ids: List[int] = []
+    if int(args.pad_to_length) > 0:
+        pad_id = token_to_id.get(pad_token)
+        if pad_id is None:
+            raise RuntimeError(f"pad token missing from vocab: {pad_token}")
+        skip_token_ids.append(int(pad_id))
     centers, contexts, pair_weights = build_skipgram_pairs(
         mapped_sequences=mapped,
         window_size=int(args.window_size),
+        skip_token_ids=skip_token_ids,
     )
 
     vocab_size = len(vocab_tokens)
@@ -328,7 +400,11 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=float(args.learning_rate))
 
     token_counts = np.array([seq_freq.get(tok, 1) for tok in vocab_tokens], dtype=np.float64)
+    for skip_id in skip_token_ids:
+        token_counts[skip_id] = 0.0
     token_counts = np.power(token_counts, 0.75)
+    if float(token_counts.sum()) <= 0.0:
+        raise RuntimeError("negative sampling distribution is empty after applying special-token masks")
     token_counts /= np.clip(token_counts.sum(), a_min=1e-12, a_max=None)
     neg_dist = torch.tensor(token_counts, dtype=torch.float32, device=device)
 
@@ -370,6 +446,10 @@ def main() -> None:
             print(f"[epoch {epoch:03d}] weighted_loss={mean_loss:.6f}", flush=True)
 
     emb = model.export_embeddings(l2_normalize=bool(args.l2_normalize)).detach().cpu()
+    if int(args.pad_to_length) > 0:
+        pad_id = token_to_id.get(pad_token)
+        if pad_id is not None:
+            emb[pad_id].zero_()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     vocab_path = out_dir / "token_vocab.json"
@@ -387,6 +467,10 @@ def main() -> None:
         "id_to_token": vocab_tokens,
         "token_frequency_from_sequences": token_frequency,
         "token_frequency_from_library_csv": token_frequency_ref,
+        "special_tokens": {
+            "pad_token": pad_token if int(args.pad_to_length) > 0 else None,
+            "unk_token": str(args.unk_token) if bool(args.add_unk) else None,
+        },
         "notes": "Token strings preserve attachment semantics, including '*' and mapped motif forms.",
     }
     vocab_path.write_text(json.dumps(vocab_payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -419,6 +503,7 @@ def main() -> None:
             "token_embeddings_npy": str(emb_npy_path),
         },
         "config": vars(args),
+        "padding": pad_stats,
     }
     meta_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 

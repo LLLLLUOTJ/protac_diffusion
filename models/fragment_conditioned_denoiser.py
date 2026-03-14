@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Dict
 
 import torch
@@ -48,6 +49,22 @@ def apply_condition_dropout(
         keep_prob = 1.0 - drop_prob
         keep_mask = (torch.rand((left_ctx.shape[0], 1), device=left_ctx.device) < keep_prob).to(left_ctx.dtype)
     return left_ctx * keep_mask, right_ctx * keep_mask
+
+
+def sinusoidal_position_encoding(length: int, dim: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Build a standard sinusoidal position embedding table [L, D]."""
+
+    if length <= 0:
+        raise ValueError("length must be > 0")
+    positions = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
+    half = dim // 2
+    scale = math.log(10000.0) / max(half - 1, 1)
+    inv_freq = torch.exp(torch.arange(half, device=device, dtype=dtype) * (-scale))
+    angles = positions * inv_freq.unsqueeze(0)
+    emb = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
+    if dim % 2 == 1:
+        emb = torch.nn.functional.pad(emb, (0, 1))
+    return emb
 
 
 class FragmentGraphEncoder(nn.Module):
@@ -354,3 +371,121 @@ class FragmentConditionedEdgeDenoiser(nn.Module):
         out = self.out_proj(h)
         out = 0.5 * (out + out.transpose(0, 1))
         return out.unsqueeze(0)
+
+
+class FragmentConditionedTokenDenoiser(nn.Module):
+    """Predict linker token-embedding noise conditioned on left/right fragment graphs."""
+
+    def __init__(
+        self,
+        embed_dim: int = 16,
+        hidden_dim: int = 128,
+        num_layers: int = 4,
+        num_heads: int = 4,
+        time_dim: int = 128,
+        dropout: float = 0.1,
+        condition_dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        if num_layers < 1:
+            raise ValueError("num_layers must be >= 1")
+        if hidden_dim % num_heads != 0:
+            raise ValueError("hidden_dim must be divisible by num_heads")
+        if not (0.0 <= condition_dropout <= 1.0):
+            raise ValueError("condition_dropout must be in [0, 1]")
+
+        self.time_emb = SinusoidalTimeEmbedding(time_dim)
+        self.time_proj = nn.Sequential(
+            nn.Linear(time_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.fragment_encoder = FragmentGraphEncoder(
+            in_dim=4,
+            hidden_dim=hidden_dim,
+            num_layers=max(1, num_layers - 1),
+            dropout=dropout,
+        )
+        self.condition_proj = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.input_proj = nn.Linear(embed_dim, hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=num_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers, enable_nested_tensor=False)
+        self.dropout = nn.Dropout(dropout)
+        self.out_proj = nn.Linear(hidden_dim, embed_dim)
+        self.condition_dropout = float(condition_dropout)
+
+    def _time_per_graph(self, t: torch.Tensor, num_graphs: int) -> torch.Tensor:
+        time_h = self.time_proj(self.time_emb(t))
+        if time_h.shape[0] == num_graphs:
+            return time_h
+        if time_h.shape[0] == 1:
+            return time_h.expand(num_graphs, -1)
+        raise ValueError(f"Expected one timestep or one timestep per graph, got {time_h.shape[0]} for {num_graphs} graphs")
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        *,
+        left_graph: Dict[str, torch.Tensor],
+        right_graph: Dict[str, torch.Tensor],
+        token_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError(f"Expected x shape [B, L, D], got {tuple(x.shape)}")
+
+        batch_size, seq_len, _ = x.shape
+        if batch_size <= 0:
+            raise ValueError("token batch must contain at least one sample")
+
+        left_ctx = self.fragment_encoder(
+            left_graph["x"],
+            left_graph["edge_index"],
+            left_graph["batch"].long(),
+        )
+        right_ctx = self.fragment_encoder(
+            right_graph["x"],
+            right_graph["edge_index"],
+            right_graph["batch"].long(),
+        )
+        if left_ctx.shape[0] != batch_size or right_ctx.shape[0] != batch_size:
+            raise ValueError("Fragment graph counts must match token batch size")
+        left_ctx, right_ctx = apply_condition_dropout(
+            left_ctx,
+            right_ctx,
+            drop_prob=self.condition_dropout,
+            training=self.training,
+        )
+
+        time_ctx = self._time_per_graph(t, num_graphs=batch_size)
+        graph_ctx = self.condition_proj(torch.cat([left_ctx, right_ctx, time_ctx], dim=1))
+        pos = sinusoidal_position_encoding(
+            length=seq_len,
+            dim=graph_ctx.shape[1],
+            device=x.device,
+            dtype=x.dtype,
+        )
+
+        if token_mask is None:
+            token_mask = torch.ones((batch_size, seq_len), device=x.device, dtype=torch.bool)
+        else:
+            token_mask = token_mask.to(device=x.device, dtype=torch.bool)
+
+        h = self.input_proj(x) + graph_ctx.unsqueeze(1) + pos.unsqueeze(0)
+        h = torch.where(token_mask.unsqueeze(-1), h, torch.zeros_like(h))
+        h = self.encoder(h, src_key_padding_mask=~token_mask)
+        h = self.dropout(h)
+        out = self.out_proj(h)
+        return torch.where(token_mask.unsqueeze(-1), out, torch.zeros_like(out))

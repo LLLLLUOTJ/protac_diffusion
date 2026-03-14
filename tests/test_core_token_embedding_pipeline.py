@@ -59,6 +59,10 @@ def test_core_token_embedding_train_and_analyze(tmp_path: Path) -> None:
         "2",
         "--learning_rate",
         "0.05",
+        "--pad_to_length",
+        "6",
+        "--pad_token",
+        "<PAD>",
         "--device",
         "cpu",
     ]
@@ -77,6 +81,7 @@ def test_core_token_embedding_train_and_analyze(tmp_path: Path) -> None:
     assert "*C*" in vocab_data["token_to_id"]
     assert "*O*" in vocab_data["token_to_id"]
     assert "*N*" in vocab_data["token_to_id"]
+    assert "<PAD>" in vocab_data["token_to_id"]
     assert "O" not in vocab_data["token_to_id"]
 
     obj = torch.load(emb_pt, map_location="cpu")
@@ -84,6 +89,12 @@ def test_core_token_embedding_train_and_analyze(tmp_path: Path) -> None:
     arr_npy = np.load(emb_npy)
     assert arr.shape[1] == 8
     assert arr_npy.shape == arr.shape
+    pad_idx = vocab_data["token_to_id"]["<PAD>"]
+    assert np.allclose(arr[pad_idx], 0.0)
+
+    summary = json.loads(summary_json.read_text(encoding="utf-8"))
+    assert summary["padding"]["pad_to_length"] == 6
+    assert summary["padding"]["padded_sequences"] == 3
 
     analyze_cmd = [
         sys.executable,
