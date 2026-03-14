@@ -473,6 +473,8 @@ def decode_oriented_embedding_sequence_to_linker(
     token_embeddings: torch.Tensor,
     vocab_embeddings: torch.Tensor,
     vocab_tokens: Sequence[str],
+    *,
+    stop_token: str | None = None,
 ) -> Dict[str, object]:
     """Decode oriented-token embeddings back into one anchored linker."""
 
@@ -482,13 +484,37 @@ def decode_oriented_embedding_sequence_to_linker(
         vocab_tokens=vocab_tokens,
         top_k=1,
     )
+    raw_oriented_tokens = list(oriented_tokens)
+    stop_index: int | None = None
+    if stop_token is not None:
+        try:
+            stop_index = raw_oriented_tokens.index(str(stop_token))
+        except ValueError:
+            stop_index = None
+        if stop_index is not None:
+            oriented_tokens = raw_oriented_tokens[:stop_index]
+
+    if not oriented_tokens:
+        return {
+            "oriented_token_smiles_raw": raw_oriented_tokens,
+            "oriented_token_smiles": [],
+            "mapped_tokens": [],
+            "scores": scores.detach().cpu(),
+            "mol": None,
+            "anchored_linker_smiles": None,
+            "reason": "empty_sequence_after_stop_token" if stop_index is not None else "empty_token_sequence",
+            "stop_index": stop_index,
+        }
+
     mapped_tokens = mapped_tokens_from_oriented_sequence(oriented_tokens)
     mol, reason = stitch_mapped_tokens(mapped_tokens)
     return {
+        "oriented_token_smiles_raw": raw_oriented_tokens,
         "oriented_token_smiles": oriented_tokens,
         "mapped_tokens": mapped_tokens,
         "scores": scores.detach().cpu(),
         "mol": mol,
         "anchored_linker_smiles": canonical_smiles(mol) if mol is not None else None,
         "reason": reason,
+        "stop_index": stop_index,
     }

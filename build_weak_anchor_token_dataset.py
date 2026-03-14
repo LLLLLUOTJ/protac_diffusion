@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pad_to_length", type=int, default=0)
     parser.add_argument("--pad_token", type=str, default="<PAD>")
     parser.add_argument("--reject_overlength", type=parse_bool, default=False)
+    parser.add_argument("--learn_pad_positions", type=parse_bool, default=False)
     return parser.parse_args()
 
 
@@ -74,6 +75,7 @@ def main() -> None:
         pad_to_length=int(args.pad_to_length),
         pad_token=str(args.pad_token),
         reject_overlength=bool(args.reject_overlength),
+        learn_pad_positions=bool(args.learn_pad_positions),
     )
     if len(dataset) == 0:
         raise RuntimeError("No valid weak-anchor token samples found")

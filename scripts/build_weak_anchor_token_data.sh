@@ -26,6 +26,7 @@ TOKEN_EMBED_ARGS=(
   --learning_rate "${TOKEN_EMBED_LR}"
   --pad_to_length "${TOKEN_PAD_TO_LENGTH}"
   --pad_token "${TOKEN_PAD_TOKEN}"
+  --learn_pad_token "${TOKEN_LEARN_PAD_TOKEN}"
   --device cpu
 )
 
@@ -37,6 +38,7 @@ BUILD_PT_ARGS=(
   --pad_to_length "${TOKEN_PAD_TO_LENGTH}"
   --pad_token "${TOKEN_PAD_TOKEN}"
   --reject_overlength "${TOKEN_REJECT_OVERLENGTH}"
+  --learn_pad_positions "${TOKEN_LEARN_PAD_POSITIONS}"
   --out_pt "${WEAK_ANCHOR_TOKEN_PT}"
 )
 

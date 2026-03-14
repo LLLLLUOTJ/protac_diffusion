@@ -133,6 +133,8 @@ def main() -> None:
     embed_dim = int(dataset.meta.get("embedding_dim", 0))
     if embed_dim <= 0:
         raise RuntimeError("Token dataset metadata missing embedding_dim")
+    learn_pad_positions = bool(dataset.meta.get("learn_pad_positions", False))
+    pad_token = str(dataset.meta.get("pad_token", ""))
 
     train_set, val_set = split_dataset(dataset, val_ratio=args.val_ratio, seed=args.seed)
     train_loader = DataLoader(
@@ -172,7 +174,8 @@ def main() -> None:
 
     print(
         f"[data] source={args.tensor_pt} total={len(dataset)} train={len(train_set)} val={len(val_set)} "
-        f"reasons={dataset.reason_counts}",
+        f"reasons={dataset.reason_counts} learn_pad_positions={learn_pad_positions} "
+        f"pad_token={pad_token or 'None'}",
         flush=True,
     )
     print(

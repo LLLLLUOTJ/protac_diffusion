@@ -100,9 +100,6 @@ def test_weak_anchor_token_dataset_and_collate(tmp_path: Path) -> None:
     row = next(csv.DictReader(csv_path.open("r", encoding="utf-8", newline="")))
     tokenized = tokenize_anchored_linker(row["anchored_linker_smiles"])
     vocab_json, emb_pt = _write_token_resources(tmp_path, ["<PAD>"] + list(tokenized["oriented_token_smiles"]), dim=8)
-    payload = torch.load(emb_pt, map_location="cpu")
-    payload["embeddings"][payload["token_to_id"]["<PAD>"]].zero_()
-    torch.save(payload, emb_pt)
 
     ds = WeakAnchorTokenDataset(
         csv_path=str(csv_path),
@@ -111,6 +108,7 @@ def test_weak_anchor_token_dataset_and_collate(tmp_path: Path) -> None:
         pad_to_length=23,
         pad_token="<PAD>",
         reject_overlength=True,
+        learn_pad_positions=True,
     )
     assert len(ds) == 1
     assert ds[0]["linker_token_ids"].shape[0] == 23
@@ -127,8 +125,9 @@ def test_weak_anchor_token_dataset_and_collate(tmp_path: Path) -> None:
     assert batch["left_graph"]["x"].ndim == 2
     assert batch["right_graph"]["x"].ndim == 2
     assert batch["linker_token"]["sample_mask"].dtype == torch.bool
-    assert int(batch["linker_token"]["sample_mask"][0].sum().item()) == len(tokenized["oriented_token_smiles"])
-    assert bool(batch["linker_token"]["fixed_mask"][0, len(tokenized["oriented_token_smiles"]):].all().item())
+    assert bool(batch["linker_token"]["learn_pad_positions"]) is True
+    assert int(batch["linker_token"]["sample_mask"][0].sum().item()) == 23
+    assert not bool(batch["linker_token"]["fixed_mask"][0].any().item())
 
 
 def test_fragment_conditioned_token_denoiser_forward_and_loss(tmp_path: Path) -> None:
@@ -136,9 +135,6 @@ def test_fragment_conditioned_token_denoiser_forward_and_loss(tmp_path: Path) ->
     row = next(csv.DictReader(csv_path.open("r", encoding="utf-8", newline="")))
     tokenized = tokenize_anchored_linker(row["anchored_linker_smiles"])
     vocab_json, emb_pt = _write_token_resources(tmp_path, ["<PAD>"] + list(tokenized["oriented_token_smiles"]), dim=8)
-    payload = torch.load(emb_pt, map_location="cpu")
-    payload["embeddings"][payload["token_to_id"]["<PAD>"]].zero_()
-    torch.save(payload, emb_pt)
 
     ds = WeakAnchorTokenDataset(
         csv_path=str(csv_path),
@@ -147,6 +143,7 @@ def test_fragment_conditioned_token_denoiser_forward_and_loss(tmp_path: Path) ->
         pad_to_length=23,
         pad_token="<PAD>",
         reject_overlength=True,
+        learn_pad_positions=True,
     )
     batch = collate_weak_anchor_token_diffusion_batch([ds[0], ds[0]])
 

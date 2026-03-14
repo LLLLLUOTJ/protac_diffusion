@@ -7,6 +7,7 @@ from sampling.token_linker_codec import (
     build_token_templates_from_rows,
     canonical_smiles,
     decode_embedding_sequence_to_linker,
+    decode_oriented_embedding_sequence_to_linker,
     mapped_tokens_from_token_sequence,
     mapped_tokens_from_oriented_sequence,
     normalize_mapped_token_sequence,
@@ -156,3 +157,36 @@ def test_oriented_token_sequence_preserves_ambiguous_direction() -> None:
     expected = Chem.MolFromSmiles("c1c(CO[*:2])nnn1CCN[*:1]")
     assert expected is not None
     assert canonical_smiles(mol) == canonical_smiles(expected)
+
+
+def test_decode_oriented_sequence_stops_at_pad_token() -> None:
+    vocab_tokens = ["[*:1]C[*:2]", "[*:1]O[*:2]", "<PAD>"]
+    vocab_embeddings = torch.tensor(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    token_embeddings = torch.tensor(
+        [
+            [0.99, 0.02, 0.0],
+            [0.02, 0.98, 0.0],
+            [0.0, 0.01, 0.99],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    decoded = decode_oriented_embedding_sequence_to_linker(
+        token_embeddings=token_embeddings,
+        vocab_embeddings=vocab_embeddings,
+        vocab_tokens=vocab_tokens,
+        stop_token="<PAD>",
+    )
+
+    assert decoded["reason"] is None
+    assert decoded["stop_index"] == 2
+    assert decoded["oriented_token_smiles"] == ["[*:1]C[*:2]", "[*:1]O[*:2]"]
+    assert decoded["oriented_token_smiles_raw"] == ["[*:1]C[*:2]", "[*:1]O[*:2]", "<PAD>", "<PAD>"]

@@ -107,6 +107,7 @@ class WeakAnchorTokenDataset(Dataset):
         pad_to_length: int = 0,
         pad_token: str = "<PAD>",
         reject_overlength: bool = False,
+        learn_pad_positions: bool = False,
     ) -> None:
         self.csv_path = Path(csv_path)
         if not self.csv_path.exists():
@@ -124,6 +125,7 @@ class WeakAnchorTokenDataset(Dataset):
         self.pad_to_length = int(pad_to_length)
         self.pad_token = str(pad_token)
         self.reject_overlength = bool(reject_overlength)
+        self.learn_pad_positions = bool(learn_pad_positions)
         self.pad_token_id = self.token_to_id.get(self.pad_token, None)
         if self.pad_to_length < 0:
             raise ValueError(f"pad_to_length must be >= 0, got {self.pad_to_length}")
@@ -242,6 +244,7 @@ class WeakAnchorTokenDataset(Dataset):
             "linker_token_ids": sample.linker_token_ids.clone(),
             "linker_token_embeddings": sample.linker_token_embeddings.clone(),
             "linker_length": int(sample.linker_length),
+            "learn_pad_positions": bool(self.learn_pad_positions),
             "token_smiles": list(sample.token_smiles),
             "token_smiles_with_maps": list(sample.token_smiles_with_maps),
             "oriented_token_smiles": list(sample.oriented_token_smiles),
@@ -276,6 +279,7 @@ def serialize_weak_anchor_token_dataset(
                 "linker_token_ids": sample.linker_token_ids,
                 "linker_token_embeddings": sample.linker_token_embeddings,
                 "linker_length": int(sample.linker_length),
+                "learn_pad_positions": bool(dataset.learn_pad_positions),
                 "token_smiles": sample.token_smiles,
                 "token_smiles_with_maps": sample.token_smiles_with_maps,
                 "oriented_token_smiles": sample.oriented_token_smiles,
@@ -309,6 +313,7 @@ def serialize_weak_anchor_token_dataset(
             "pad_token": dataset.pad_token,
             "pad_token_id": int(dataset.pad_token_id) if dataset.pad_token_id is not None else None,
             "reject_overlength": bool(dataset.reject_overlength),
+            "learn_pad_positions": bool(dataset.learn_pad_positions),
             "include_ring_single_bonds": bool(dataset.include_ring_single_bonds),
             "source_format": "weak_anchor_dataset_csv",
         },
@@ -348,6 +353,7 @@ class WeakAnchorTokenPTDataset(Dataset):
             "linker_token_ids": record["linker_token_ids"].long(),
             "linker_token_embeddings": record["linker_token_embeddings"].float(),
             "linker_length": int(record.get("linker_length", record["linker_token_ids"].shape[0])),
+            "learn_pad_positions": bool(record.get("learn_pad_positions", self.meta.get("learn_pad_positions", False))),
             "token_smiles": [str(x) for x in record.get("token_smiles", [])],
             "token_smiles_with_maps": [str(x) for x in record.get("token_smiles_with_maps", [])],
             "oriented_token_smiles": [str(x) for x in record.get("oriented_token_smiles", [])],
@@ -377,6 +383,7 @@ def collate_weak_anchor_token_tensor_samples(samples: Sequence[Dict[str, Any]]) 
         "linker_token_ids": [sample["linker_token_ids"] for sample in samples],
         "linker_token_embeddings": [sample["linker_token_embeddings"] for sample in samples],
         "linker_length": torch.tensor([int(sample["linker_length"]) for sample in samples], dtype=torch.long),
+        "learn_pad_positions": bool(samples[0].get("learn_pad_positions", False)),
         "token_smiles": [list(sample["token_smiles"]) for sample in samples],
         "token_smiles_with_maps": [list(sample["token_smiles_with_maps"]) for sample in samples],
         "oriented_token_smiles": [list(sample["oriented_token_smiles"]) for sample in samples],

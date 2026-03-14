@@ -17,6 +17,7 @@ class TokenDiffusionPack:
     loss_mask: torch.Tensor
     token_ids: torch.Tensor
     lengths: torch.Tensor
+    learn_pad_positions: bool
 
 
 def build_linker_token_diffusion_pack(samples: Sequence[Dict[str, Any]]) -> TokenDiffusionPack:
@@ -38,17 +39,21 @@ def build_linker_token_diffusion_pack(samples: Sequence[Dict[str, Any]]) -> Toke
     fixed_values = torch.zeros((batch_size, max_len, embedding_dim), dtype=torch.float32)
     loss_mask = torch.zeros((batch_size, max_len), dtype=torch.bool)
     token_ids = torch.full((batch_size, max_len), fill_value=-1, dtype=torch.long)
+    learn_pad_positions = bool(samples[0].get("learn_pad_positions", False))
 
     for idx, sample in enumerate(samples):
+        if bool(sample.get("learn_pad_positions", False)) != learn_pad_positions:
+            raise ValueError("mixed learn_pad_positions settings in one batch are not supported")
         emb = sample["linker_token_embeddings"].float()
         ids = sample["linker_token_ids"].long()
         full_length = int(emb.shape[0])
         length = int(sample.get("linker_length", full_length))
         x_start[idx, :full_length] = emb
         token_ids[idx, :full_length] = ids
-        sample_mask[idx, :length] = True
-        loss_mask[idx, :length] = True
-        if full_length > length:
+        active_length = full_length if learn_pad_positions else length
+        sample_mask[idx, :active_length] = True
+        loss_mask[idx, :active_length] = True
+        if (not learn_pad_positions) and full_length > length:
             fixed_mask[idx, length:full_length] = True
             fixed_values[idx, length:full_length] = emb[length:full_length]
 
@@ -60,6 +65,7 @@ def build_linker_token_diffusion_pack(samples: Sequence[Dict[str, Any]]) -> Toke
         loss_mask=loss_mask,
         token_ids=token_ids,
         lengths=lengths,
+        learn_pad_positions=learn_pad_positions,
     )
 
 
@@ -77,6 +83,7 @@ def collate_weak_anchor_token_diffusion_batch(samples: Sequence[Dict[str, Any]])
             "loss_mask": token_pack.loss_mask,
             "token_ids": token_pack.token_ids,
             "lengths": token_pack.lengths,
+            "learn_pad_positions": token_pack.learn_pad_positions,
         },
         "left_graph": collate_graph_tensor_blocks([sample["left_graph"] for sample in samples]),
         "right_graph": collate_graph_tensor_blocks([sample["right_graph"] for sample in samples]),

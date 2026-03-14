@@ -130,12 +130,15 @@ def decode_results(
 
     rows: List[Dict[str, Any]] = []
     mask = batch["linker_token"]["sample_mask"].bool()
+    learn_pad_positions = bool(batch["linker_token"].get("learn_pad_positions", False))
+    pad_token = str(dataset.meta.get("pad_token", "")) if learn_pad_positions else ""
     for idx in range(sampled_token_x.shape[0]):
-        length = int(mask[idx].sum().item())
+        length = int(mask[idx].sum().item()) if (not learn_pad_positions) else int(sampled_token_x.shape[1])
         decoded = decode_oriented_embedding_sequence_to_linker(
             token_embeddings=sampled_token_x[idx, :length].cpu(),
             vocab_embeddings=vocab_embeddings,
             vocab_tokens=vocab_tokens,
+            stop_token=pad_token or None,
         )
 
         left_smiles = batch["left_fragment_smiles"][idx]
@@ -162,7 +165,12 @@ def decode_results(
             "source_left_fragment_smiles": left_smiles,
             "source_right_fragment_smiles": right_smiles,
             "source_oriented_token_smiles": json.dumps(batch["oriented_token_smiles"][idx], ensure_ascii=False),
+            "generated_oriented_token_smiles_raw": json.dumps(
+                decoded.get("oriented_token_smiles_raw", decoded["oriented_token_smiles"]),
+                ensure_ascii=False,
+            ),
             "generated_oriented_token_smiles": json.dumps(decoded["oriented_token_smiles"], ensure_ascii=False),
+            "generated_stop_index": decoded.get("stop_index"),
             "generated_anchored_linker_smiles": decoded["anchored_linker_smiles"],
             "generated_full_smiles": Chem.MolToSmiles(full_mol, canonical=True) if full_mol is not None else None,
             "decode_reason": decoded["reason"],
@@ -217,7 +225,8 @@ def main() -> None:
 
     print(
         f"[sample] device={device} source_sample_id={sample['sample_id']} "
-        f"num_samples={args.num_samples}",
+        f"num_samples={args.num_samples} "
+        f"learn_pad_positions={bool(dataset.meta.get('learn_pad_positions', False))}",
         flush=True,
     )
     print(

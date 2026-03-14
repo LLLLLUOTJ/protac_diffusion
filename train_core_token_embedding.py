@@ -308,6 +308,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--l2_normalize", type=parse_bool, default=True)
     parser.add_argument("--pad_to_length", type=int, default=0)
     parser.add_argument("--pad_token", type=str, default="<PAD>")
+    parser.add_argument("--learn_pad_token", type=parse_bool, default=False)
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--log_every", type=int, default=10)
@@ -383,7 +384,8 @@ def main() -> None:
         unk_token=str(args.unk_token) if bool(args.add_unk) else None,
     )
     skip_token_ids: List[int] = []
-    if int(args.pad_to_length) > 0:
+    learn_pad_token = bool(args.learn_pad_token)
+    if int(args.pad_to_length) > 0 and not learn_pad_token:
         pad_id = token_to_id.get(pad_token)
         if pad_id is None:
             raise RuntimeError(f"pad token missing from vocab: {pad_token}")
@@ -446,7 +448,7 @@ def main() -> None:
             print(f"[epoch {epoch:03d}] weighted_loss={mean_loss:.6f}", flush=True)
 
     emb = model.export_embeddings(l2_normalize=bool(args.l2_normalize)).detach().cpu()
-    if int(args.pad_to_length) > 0:
+    if int(args.pad_to_length) > 0 and not learn_pad_token:
         pad_id = token_to_id.get(pad_token)
         if pad_id is not None:
             emb[pad_id].zero_()
@@ -469,6 +471,7 @@ def main() -> None:
         "token_frequency_from_library_csv": token_frequency_ref,
         "special_tokens": {
             "pad_token": pad_token if int(args.pad_to_length) > 0 else None,
+            "learn_pad_token": learn_pad_token if int(args.pad_to_length) > 0 else False,
             "unk_token": str(args.unk_token) if bool(args.add_unk) else None,
         },
         "notes": "Token strings preserve attachment semantics, including '*' and mapped motif forms.",

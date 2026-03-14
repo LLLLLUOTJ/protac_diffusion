@@ -12,6 +12,7 @@
 - train token diffusion: [scripts/train_linker_token_diffusion.sh](/Users/lintianjian/diffusion/scripts/train_linker_token_diffusion.sh)
 - sample token diffusion: [scripts/sample_linker_token.sh](/Users/lintianjian/diffusion/scripts/sample_linker_token.sh)
 - evaluate token diffusion: [scripts/evaluate_linker_token_generation.sh](/Users/lintianjian/diffusion/scripts/evaluate_linker_token_generation.sh)
+- analyze token metrics: [scripts/analyze_token_generation_metrics.sh](/Users/lintianjian/diffusion/scripts/analyze_token_generation_metrics.sh)
 - analyze train log: [scripts/analyze_train_log.sh](/Users/lintianjian/diffusion/scripts/analyze_train_log.sh)
 - end-to-end wrapper: [scripts/run_server_pipeline.sh](/Users/lintianjian/diffusion/scripts/run_server_pipeline.sh)
 - token end-to-end wrapper: [scripts/run_token_server_pipeline.sh](/Users/lintianjian/diffusion/scripts/run_token_server_pipeline.sh)
@@ -156,16 +157,24 @@ Evaluate token diffusion:
 bash scripts/evaluate_linker_token_generation.sh
 ```
 
+Analyze token generation quality:
+
+```bash
+bash scripts/analyze_token_generation_metrics.sh
+```
+
 Most relevant outputs:
 
 - tokenized weak-anchor csv: `data/processed/weak_anchor_tokenized_oriented.csv`
 - token embeddings: `data/processed/task/oriented_token_embedding/`
   - trained with `PAD=<PAD>` and `pad_to_length=23`
+  - current token pipeline uses `TOKEN_LEARN_PAD_TOKEN=true` and `TOKEN_LEARN_PAD_POSITIONS=true`, so tail `PAD` slots are generated rather than fixed
 - token tensor dataset: `data/processed/weak_anchor_token_tensors.pt`
   - linker token sequences are padded to length `23`; overlength samples are rejected instead of truncated
 - token checkpoint: `checkpoints/linker_token_diffusion.pt`
 - token samples: `outputs/linker_token_sampling/`
 - token eval: `outputs/linker_token_eval/`
+- token metrics: `outputs/linker_token_metrics/`
 
 ## 6) Evaluate Generation
 
@@ -192,6 +201,20 @@ Outputs:
 - `outputs/linker_token_eval/per_source_summary.csv`
 - `outputs/linker_token_eval/summary.json`
 - `outputs/linker_token_eval/evaluation_overview.png`
+
+Token metrics analysis:
+
+```bash
+bash scripts/analyze_token_generation_metrics.sh
+```
+
+Outputs:
+
+- `outputs/linker_token_metrics/summary.json`
+- `outputs/linker_token_metrics/per_source_quality.csv`
+- `outputs/linker_token_metrics/row_metrics.csv`
+- `outputs/linker_token_metrics/REPORT.md`
+- `outputs/linker_token_metrics/overview.png`
 
 ## 7) Analyze Training Log
 
