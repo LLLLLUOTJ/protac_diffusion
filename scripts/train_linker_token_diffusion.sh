@@ -26,6 +26,7 @@ TOKEN_ARGS=(
   --val-ratio "${TOKEN_VAL_RATIO}"
   --patience "${TOKEN_PATIENCE}"
   --min-delta "${TOKEN_MIN_DELTA}"
+  --sample-weight-mode "${TOKEN_SAMPLE_WEIGHT_MODE}"
   --seed "${SEED}"
   --device "${DEVICE}"
   --out "${TOKEN_CKPT}"

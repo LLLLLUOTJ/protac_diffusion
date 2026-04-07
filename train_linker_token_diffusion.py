@@ -5,11 +5,12 @@ import csv
 import json
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 
 from data.weak_anchor_token_dataset import WeakAnchorTokenPTDataset
 from data.weak_anchor_token_diffusion import collate_weak_anchor_token_diffusion_batch
@@ -38,6 +39,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto", help="auto|cpu|cuda")
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--min-delta", type=float, default=1e-4)
+    parser.add_argument(
+        "--sample-weight-mode",
+        type=str,
+        default="none",
+        choices=[
+            "none",
+            "linker_id_inv",
+            "linker_id_inv_sqrt",
+            "anchored_inv",
+            "anchored_inv_sqrt",
+        ],
+        help="Optional weighted sampling mode for the training split.",
+    )
     parser.add_argument("--out", type=str, default="checkpoints/linker_token_diffusion.pt")
     return parser.parse_args()
 
@@ -60,6 +74,49 @@ def split_dataset(dataset: Dataset, val_ratio: float, seed: int) -> Tuple[Subset
     if len(train_idx) == 0:
         train_idx = val_idx
     return Subset(dataset, train_idx), Subset(dataset, val_idx)
+
+
+def build_weighted_sampler(train_set: Subset, sample_weight_mode: str) -> tuple[WeightedRandomSampler | None, dict[str, Any]]:
+    if sample_weight_mode == "none":
+        return None, {"mode": "none"}
+
+    if not isinstance(train_set.dataset, WeakAnchorTokenPTDataset):
+        raise TypeError("weighted sampling currently expects WeakAnchorTokenPTDataset as the base dataset")
+
+    if sample_weight_mode.startswith("linker_id_"):
+        field = "linker_id"
+    elif sample_weight_mode.startswith("anchored_"):
+        field = "anchored_linker_smiles"
+    else:
+        raise ValueError(f"Unsupported sample_weight_mode: {sample_weight_mode}")
+
+    if sample_weight_mode.endswith("_inv"):
+        power = 1.0
+    elif sample_weight_mode.endswith("_inv_sqrt"):
+        power = 0.5
+    else:
+        raise ValueError(f"Unsupported sample_weight_mode: {sample_weight_mode}")
+
+    group_values = [str(train_set.dataset.records[int(i)].get(field, "")) for i in train_set.indices]
+    counts = Counter(group_values)
+    raw_weights = torch.tensor([1.0 / (counts[value] ** power) for value in group_values], dtype=torch.double)
+    raw_weights = raw_weights * (len(raw_weights) / raw_weights.sum().item())
+    sampler = WeightedRandomSampler(weights=raw_weights, num_samples=len(raw_weights), replacement=True)
+
+    count_values = list(counts.values())
+    summary = {
+        "mode": sample_weight_mode,
+        "field": field,
+        "num_groups": len(counts),
+        "min_group_count": int(min(count_values)),
+        "median_group_count": float(sorted(count_values)[len(count_values) // 2]),
+        "max_group_count": int(max(count_values)),
+        "top_groups": counts.most_common(10),
+        "weight_min": float(raw_weights.min().item()),
+        "weight_max": float(raw_weights.max().item()),
+        "weight_mean": float(raw_weights.mean().item()),
+    }
+    return sampler, summary
 
 
 def move_to_device(obj: Any, device: torch.device) -> Any:
@@ -137,10 +194,12 @@ def main() -> None:
     pad_token = str(dataset.meta.get("pad_token", ""))
 
     train_set, val_set = split_dataset(dataset, val_ratio=args.val_ratio, seed=args.seed)
+    train_sampler, sampler_summary = build_weighted_sampler(train_set, sample_weight_mode=args.sample_weight_mode)
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=0,
         collate_fn=collate_weak_anchor_token_diffusion_batch,
     )
@@ -181,9 +240,12 @@ def main() -> None:
     print(
         f"[train] device={device} batch_size={args.batch_size} embed_dim={embed_dim} "
         f"hidden_dim={args.hidden_dim} layers={args.layers} heads={args.heads} "
-        f"timesteps={args.timesteps} condition_dropout={args.condition_dropout}",
+        f"timesteps={args.timesteps} condition_dropout={args.condition_dropout} "
+        f"sample_weight_mode={args.sample_weight_mode}",
         flush=True,
     )
+    if args.sample_weight_mode != "none":
+        print(f"[sampler] {json.dumps(sampler_summary, ensure_ascii=False)}", flush=True)
 
     best_val = float("inf")
     best_epoch = 0
@@ -228,6 +290,7 @@ def main() -> None:
                         "beta_end": args.beta_end,
                     },
                     "train_config": vars(args),
+                    "sampler_summary": sampler_summary,
                     "best_val_loss": best_val,
                     "token_meta": {
                         "token_vocab": dataset.vocab_tokens,
@@ -271,6 +334,7 @@ def main() -> None:
                 "total_epoch_time_s": total_time,
                 "avg_epoch_time_s": (total_time / len(history)) if history else None,
                 "train_config": vars(args),
+                "sampler_summary": sampler_summary,
             },
             f,
             indent=2,

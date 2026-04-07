@@ -506,22 +506,39 @@ def make_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional path to write up to 20 accepted examples with anchor indices and smiles.",
     )
+    parser.add_argument(
+        "--rank_mode",
+        choices=["default", "longest_only"],
+        default="default",
+        help="How to choose a single accepted linker candidate per PROTAC.",
+    )
     return parser
 
 
-def candidate_rank_key(row: Dict[str, Any]) -> Tuple[int, int, float, int, int, str, str]:
-    """Higher is better; final string terms keep the choice deterministic."""
+def candidate_rank_key(
+    row: Dict[str, Any],
+    rank_mode: str,
+) -> Tuple[int, ... | float | str]:
+    """Return a deterministic ranking key for accepted candidates."""
 
-    return (
-        int(row["_num_heavy_atoms_linker"]),
-        int(row["_anchor_graph_distance"]),
-        float(row["_linker_ratio_pct"]),
-        int(row["num_atoms_linker"]),
-        min(int(row["_num_heavy_atoms_left"]), int(row["_num_heavy_atoms_right"])),
-        int(row["_num_heavy_atoms_left"]) + int(row["_num_heavy_atoms_right"]),
-        str(row["anchored_linker_smiles"]),
-        str(row["linker_id"]),
-    )
+    if rank_mode == "longest_only":
+        return (
+            int(row["_num_heavy_atoms_linker"]),
+            str(row["anchored_linker_smiles"]),
+            str(row["linker_id"]),
+        )
+    if rank_mode == "default":
+        return (
+            int(row["_num_heavy_atoms_linker"]),
+            int(row["_anchor_graph_distance"]),
+            float(row["_linker_ratio_pct"]),
+            int(row["num_atoms_linker"]),
+            min(int(row["_num_heavy_atoms_left"]), int(row["_num_heavy_atoms_right"])),
+            int(row["_num_heavy_atoms_left"]) + int(row["_num_heavy_atoms_right"]),
+            str(row["anchored_linker_smiles"]),
+            str(row["linker_id"]),
+        )
+    raise ValueError(f"Unsupported rank_mode: {rank_mode}")
 
 
 def main() -> None:
@@ -629,6 +646,7 @@ def main() -> None:
         "min_anchor_graph_distance": int(args.min_anchor_graph_distance),
         "min_linker_ratio_pct": float(args.min_linker_ratio_pct),
         "max_linker_ratio_pct": float(args.max_linker_ratio_pct),
+        "rank_mode": str(args.rank_mode),
     }
     for reason in REJECTION_REASONS:
         summary[reason] = 0
@@ -656,7 +674,7 @@ def main() -> None:
                 )
 
             best_row: Optional[Dict[str, Any]] = None
-            best_rank: Optional[Tuple[int, int, float, int, int, str, str]] = None
+            best_rank: Optional[Tuple[int, ... | float | str]] = None
             protac_heavy = count_heavy_atoms(protac_record.mol)
 
             for linker_heavy, linker_record in linker_pool:
@@ -680,7 +698,7 @@ def main() -> None:
 
                 if accepted_row is not None:
                     summary["valid_candidates"] += 1
-                    rank = candidate_rank_key(accepted_row)
+                    rank = candidate_rank_key(accepted_row, rank_mode=args.rank_mode)
                     if best_rank is None or rank > best_rank:
                         best_row = accepted_row
                         best_rank = rank
