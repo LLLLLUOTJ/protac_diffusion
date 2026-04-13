@@ -112,8 +112,12 @@ class DDPM(nn.Module):
         fixed_base = x_start if fixed_values is None else fixed_values
         return self._apply_fixed_mask(x_t, fixed_mask=fixed_mask, fixed_values=fixed_base)
 
-    # sum of ||epsilon - epsilon_predicted||^2 for all samples in the batch
-    def p_losses(
+    def predict_x0_from_noise(self, x_t: Tensor, t: Tensor, predicted_noise: Tensor) -> Tensor:
+        sqrt_alpha_bar = self._extract(self.sqrt_alphas_cumprod, t, x_t)
+        sqrt_one_minus_alpha_bar = self._extract(self.sqrt_one_minus_alphas_cumprod, t, x_t)
+        return (x_t - sqrt_one_minus_alpha_bar * predicted_noise) / sqrt_alpha_bar.clamp(min=1e-8)
+
+    def training_terms(
         self,
         x_start: Tensor,
         t: Tensor,
@@ -122,7 +126,7 @@ class DDPM(nn.Module):
         fixed_values: Tensor | None = None,
         loss_mask: Tensor | None = None,
         model_kwargs: Optional[dict] = None,
-    ) -> Tensor:
+    ) -> dict[str, Tensor]:
         noise = torch.randn_like(x_start)
         noise = self._apply_sample_mask(noise, sample_mask=sample_mask)
         x_t = self.q_sample(
@@ -150,7 +154,36 @@ class DDPM(nn.Module):
             effective_mask = effective_mask * self._broadcast_like(loss_mask, mse, dtype=mse.dtype)
 
         denom = effective_mask.sum().clamp(min=1.0)
-        return (mse * effective_mask).sum() / denom
+        loss = (mse * effective_mask).sum() / denom
+        return {
+            "loss": loss,
+            "noise": noise,
+            "x_t": x_t,
+            "predicted_noise": predicted_noise,
+            "mse": mse,
+            "effective_mask": effective_mask,
+        }
+
+    # sum of ||epsilon - epsilon_predicted||^2 for all samples in the batch
+    def p_losses(
+        self,
+        x_start: Tensor,
+        t: Tensor,
+        sample_mask: Tensor | None = None,
+        fixed_mask: Tensor | None = None,
+        fixed_values: Tensor | None = None,
+        loss_mask: Tensor | None = None,
+        model_kwargs: Optional[dict] = None,
+    ) -> Tensor:
+        return self.training_terms(
+            x_start=x_start,
+            t=t,
+            sample_mask=sample_mask,
+            fixed_mask=fixed_mask,
+            fixed_values=fixed_values,
+            loss_mask=loss_mask,
+            model_kwargs=model_kwargs,
+        )["loss"]
 
     @torch.no_grad()
     def p_sample(

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
 
 from data.weak_anchor_token_dataset import WeakAnchorTokenPTDataset
@@ -51,6 +52,24 @@ def parse_args() -> argparse.Namespace:
             "anchored_inv_sqrt",
         ],
         help="Optional weighted sampling mode for the training split.",
+    )
+    parser.add_argument(
+        "--token-ce-weight",
+        type=float,
+        default=0.15,
+        help="Weight for token-level auxiliary CE loss computed from predicted x0 embeddings.",
+    )
+    parser.add_argument(
+        "--token-ce-temperature",
+        type=float,
+        default=0.10,
+        help="Cosine-logit temperature for token auxiliary CE loss.",
+    )
+    parser.add_argument(
+        "--pad-suffix-weight",
+        type=float,
+        default=2.0,
+        help="Extra weight multiplier for PAD suffix positions in token auxiliary loss.",
     )
     parser.add_argument("--out", type=str, default="checkpoints/linker_token_diffusion.pt")
     return parser.parse_args()
@@ -129,17 +148,76 @@ def move_to_device(obj: Any, device: torch.device) -> Any:
     return obj
 
 
+def compute_token_auxiliary_terms(
+    *,
+    x0_pred: torch.Tensor,
+    vocab_embeddings: torch.Tensor,
+    token_ids: torch.Tensor,
+    loss_mask: torch.Tensor,
+    pad_token_id: int | None,
+    temperature: float,
+    pad_suffix_weight: float,
+) -> Dict[str, torch.Tensor]:
+    if temperature <= 0:
+        raise ValueError(f"temperature must be > 0, got {temperature}")
+
+    norm_x = F.normalize(x0_pred.float(), p=2, dim=-1)
+    norm_vocab = F.normalize(vocab_embeddings.float(), p=2, dim=-1)
+    logits = (norm_x @ norm_vocab.transpose(0, 1)) / float(temperature)
+
+    per_token_ce = F.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]),
+        token_ids.reshape(-1),
+        reduction="none",
+        ignore_index=-1,
+    ).reshape_as(token_ids)
+
+    base_weights = loss_mask.float()
+    pad_suffix_mask = torch.zeros_like(token_ids, dtype=torch.bool)
+    if pad_token_id is not None:
+        pad_suffix_mask = (token_ids == int(pad_token_id)) & loss_mask.bool()
+
+    weights = base_weights
+    if pad_suffix_weight != 1.0:
+        weights = weights * torch.where(
+            pad_suffix_mask,
+            torch.full_like(base_weights, float(pad_suffix_weight)),
+            torch.ones_like(base_weights),
+        )
+
+    denom = weights.sum().clamp(min=1.0)
+    base_denom = base_weights.sum().clamp(min=1.0)
+    pad_denom = pad_suffix_mask.float().sum().clamp(min=1.0)
+
+    return {
+        "loss": (per_token_ce * weights).sum() / denom,
+        "token_ce": (per_token_ce * base_weights).sum() / base_denom,
+        "pad_suffix_ce": (per_token_ce * pad_suffix_mask.float()).sum() / pad_denom,
+        "pad_suffix_fraction": pad_suffix_mask.float().mean(),
+    }
+
+
 def run_epoch(
     diffusion: DDPM,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer | None,
     device: torch.device,
     timesteps: int,
+    vocab_embeddings: torch.Tensor,
+    pad_token_id: int | None,
+    token_ce_weight: float,
+    token_ce_temperature: float,
+    pad_suffix_weight: float,
 ) -> Dict[str, float]:
     is_train = optimizer is not None
     diffusion.train() if is_train else diffusion.eval()
 
     total_loss = 0.0
+    total_diffusion_loss = 0.0
+    total_token_aux_loss = 0.0
+    total_token_ce = 0.0
+    total_pad_suffix_ce = 0.0
+    total_pad_suffix_fraction = 0.0
     total_batches = 0
     for batch in loader:
         batch = move_to_device(batch, device)
@@ -155,7 +233,7 @@ def run_epoch(
         if is_train:
             optimizer.zero_grad(set_to_none=True)
         with torch.set_grad_enabled(is_train):
-            loss = diffusion.p_losses(
+            terms = diffusion.training_terms(
                 x_start=x_start,
                 t=t,
                 sample_mask=linker_token["sample_mask"],
@@ -164,14 +242,52 @@ def run_epoch(
                 loss_mask=linker_token["loss_mask"],
                 model_kwargs=model_kwargs,
             )
+            diffusion_loss = terms["loss"]
+            token_aux_loss = torch.zeros((), device=device)
+            token_ce = torch.zeros((), device=device)
+            pad_suffix_ce = torch.zeros((), device=device)
+            pad_suffix_fraction = torch.zeros((), device=device)
+            if token_ce_weight > 0.0:
+                x0_pred = diffusion.predict_x0_from_noise(
+                    x_t=terms["x_t"],
+                    t=t,
+                    predicted_noise=terms["predicted_noise"],
+                )
+                aux_terms = compute_token_auxiliary_terms(
+                    x0_pred=x0_pred,
+                    vocab_embeddings=vocab_embeddings,
+                    token_ids=linker_token["token_ids"],
+                    loss_mask=linker_token["loss_mask"],
+                    pad_token_id=pad_token_id,
+                    temperature=token_ce_temperature,
+                    pad_suffix_weight=pad_suffix_weight,
+                )
+                token_aux_loss = aux_terms["loss"]
+                token_ce = aux_terms["token_ce"]
+                pad_suffix_ce = aux_terms["pad_suffix_ce"]
+                pad_suffix_fraction = aux_terms["pad_suffix_fraction"]
+            loss = diffusion_loss + float(token_ce_weight) * token_aux_loss
             if is_train:
                 loss.backward()
                 optimizer.step()
 
         total_loss += float(loss.item())
+        total_diffusion_loss += float(diffusion_loss.item())
+        total_token_aux_loss += float(token_aux_loss.item())
+        total_token_ce += float(token_ce.item())
+        total_pad_suffix_ce += float(pad_suffix_ce.item())
+        total_pad_suffix_fraction += float(pad_suffix_fraction.item())
         total_batches += 1
 
-    return {"loss": total_loss / max(total_batches, 1)}
+    denom = max(total_batches, 1)
+    return {
+        "loss": total_loss / denom,
+        "diffusion_loss": total_diffusion_loss / denom,
+        "token_aux_loss": total_token_aux_loss / denom,
+        "token_ce": total_token_ce / denom,
+        "pad_suffix_ce": total_pad_suffix_ce / denom,
+        "pad_suffix_fraction": total_pad_suffix_fraction / denom,
+    }
 
 
 def main() -> None:
@@ -192,6 +308,12 @@ def main() -> None:
         raise RuntimeError("Token dataset metadata missing embedding_dim")
     learn_pad_positions = bool(dataset.meta.get("learn_pad_positions", False))
     pad_token = str(dataset.meta.get("pad_token", ""))
+    pad_token_id_raw = dataset.meta.get("pad_token_id", None)
+    pad_token_id = int(pad_token_id_raw) if pad_token_id_raw is not None else None
+    vocab_embeddings = dataset.meta.get("token_embeddings")
+    if not torch.is_tensor(vocab_embeddings):
+        raise RuntimeError("Token dataset metadata missing token_embeddings")
+    vocab_embeddings = vocab_embeddings.detach().cpu().float().to(device)
 
     train_set, val_set = split_dataset(dataset, val_ratio=args.val_ratio, seed=args.seed)
     train_sampler, sampler_summary = build_weighted_sampler(train_set, sample_weight_mode=args.sample_weight_mode)
@@ -241,7 +363,8 @@ def main() -> None:
         f"[train] device={device} batch_size={args.batch_size} embed_dim={embed_dim} "
         f"hidden_dim={args.hidden_dim} layers={args.layers} heads={args.heads} "
         f"timesteps={args.timesteps} condition_dropout={args.condition_dropout} "
-        f"sample_weight_mode={args.sample_weight_mode}",
+        f"sample_weight_mode={args.sample_weight_mode} token_ce_weight={args.token_ce_weight} "
+        f"token_ce_temperature={args.token_ce_temperature} pad_suffix_weight={args.pad_suffix_weight}",
         flush=True,
     )
     if args.sample_weight_mode != "none":
@@ -253,20 +376,53 @@ def main() -> None:
     history: list[Dict[str, float | int]] = []
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.perf_counter()
-        train_metrics = run_epoch(diffusion, train_loader, optimizer, device, timesteps=args.timesteps)
-        val_metrics = run_epoch(diffusion, val_loader, None, device, timesteps=args.timesteps)
+        train_metrics = run_epoch(
+            diffusion,
+            train_loader,
+            optimizer,
+            device,
+            timesteps=args.timesteps,
+            vocab_embeddings=vocab_embeddings,
+            pad_token_id=pad_token_id,
+            token_ce_weight=args.token_ce_weight,
+            token_ce_temperature=args.token_ce_temperature,
+            pad_suffix_weight=args.pad_suffix_weight,
+        )
+        val_metrics = run_epoch(
+            diffusion,
+            val_loader,
+            None,
+            device,
+            timesteps=args.timesteps,
+            vocab_embeddings=vocab_embeddings,
+            pad_token_id=pad_token_id,
+            token_ce_weight=args.token_ce_weight,
+            token_ce_temperature=args.token_ce_temperature,
+            pad_suffix_weight=args.pad_suffix_weight,
+        )
         epoch_time = time.perf_counter() - epoch_start
         history.append(
             {
                 "epoch": epoch,
                 "train_loss": float(train_metrics["loss"]),
                 "val_loss": float(val_metrics["loss"]),
+                "train_diffusion_loss": float(train_metrics["diffusion_loss"]),
+                "val_diffusion_loss": float(val_metrics["diffusion_loss"]),
+                "train_token_aux_loss": float(train_metrics["token_aux_loss"]),
+                "val_token_aux_loss": float(val_metrics["token_aux_loss"]),
+                "train_pad_suffix_ce": float(train_metrics["pad_suffix_ce"]),
+                "val_pad_suffix_ce": float(val_metrics["pad_suffix_ce"]),
                 "epoch_time_s": float(epoch_time),
             }
         )
         print(
             f"[epoch {epoch:03d}] train_loss={train_metrics['loss']:.4f} "
-            f"val_loss={val_metrics['loss']:.4f}",
+            f"val_loss={val_metrics['loss']:.4f} "
+            f"train_diff={train_metrics['diffusion_loss']:.4f} "
+            f"val_diff={val_metrics['diffusion_loss']:.4f} "
+            f"train_aux={train_metrics['token_aux_loss']:.4f} "
+            f"val_aux={val_metrics['token_aux_loss']:.4f} "
+            f"val_pad_ce={val_metrics['pad_suffix_ce']:.4f}",
             flush=True,
         )
         if val_metrics["loss"] < (best_val - args.min_delta):
@@ -295,6 +451,8 @@ def main() -> None:
                     "token_meta": {
                         "token_vocab": dataset.vocab_tokens,
                         "token_to_id": dataset.token_to_id,
+                        "pad_token": pad_token,
+                        "pad_token_id": pad_token_id,
                         "embedding_dim": embed_dim,
                     },
                 },
@@ -314,7 +472,21 @@ def main() -> None:
 
     history_path = out_path.with_suffix(".history.csv")
     with history_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss", "epoch_time_s"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "epoch",
+                "train_loss",
+                "val_loss",
+                "train_diffusion_loss",
+                "val_diffusion_loss",
+                "train_token_aux_loss",
+                "val_token_aux_loss",
+                "train_pad_suffix_ce",
+                "val_pad_suffix_ce",
+                "epoch_time_s",
+            ],
+        )
         writer.writeheader()
         writer.writerows(history)
 
@@ -331,6 +503,12 @@ def main() -> None:
                 "stopped_early": bool(args.patience > 0 and len(history) < args.epochs),
                 "final_train_loss": history[-1]["train_loss"] if history else None,
                 "final_val_loss": history[-1]["val_loss"] if history else None,
+                "final_train_diffusion_loss": history[-1]["train_diffusion_loss"] if history else None,
+                "final_val_diffusion_loss": history[-1]["val_diffusion_loss"] if history else None,
+                "final_train_token_aux_loss": history[-1]["train_token_aux_loss"] if history else None,
+                "final_val_token_aux_loss": history[-1]["val_token_aux_loss"] if history else None,
+                "final_train_pad_suffix_ce": history[-1]["train_pad_suffix_ce"] if history else None,
+                "final_val_pad_suffix_ce": history[-1]["val_pad_suffix_ce"] if history else None,
                 "total_epoch_time_s": total_time,
                 "avg_epoch_time_s": (total_time / len(history)) if history else None,
                 "train_config": vars(args),

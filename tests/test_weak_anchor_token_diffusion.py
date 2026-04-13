@@ -13,6 +13,7 @@ from data.weak_anchor_token_diffusion import collate_weak_anchor_token_diffusion
 from diffusion.ddpm import DDPM
 from models.fragment_conditioned_denoiser import FragmentConditionedTokenDenoiser
 from sampling.token_linker_codec import tokenize_anchored_linker
+from train_linker_token_diffusion import compute_token_auxiliary_terms
 
 
 def _make_record(smiles: str, row_id: str) -> MolRecord:
@@ -180,3 +181,54 @@ def test_fragment_conditioned_token_denoiser_forward_and_loss(tmp_path: Path) ->
     )
     assert torch.isfinite(loss)
     assert float(loss.item()) >= 0.0
+
+    terms = ddpm.training_terms(
+        x_start=batch["linker_token"]["x_start"],
+        t=torch.tensor([2, 2], dtype=torch.long),
+        sample_mask=batch["linker_token"]["sample_mask"],
+        fixed_mask=batch["linker_token"]["fixed_mask"],
+        fixed_values=batch["linker_token"]["fixed_values"],
+        loss_mask=batch["linker_token"]["loss_mask"],
+        model_kwargs={
+            "left_graph": batch["left_graph"],
+            "right_graph": batch["right_graph"],
+            "token_mask": batch["linker_token"]["sample_mask"],
+        },
+    )
+    assert torch.isfinite(terms["loss"])
+    assert set(terms.keys()) >= {"loss", "x_t", "predicted_noise", "noise", "mse", "effective_mask"}
+
+
+def test_token_auxiliary_terms_upweight_pad_suffix_positions() -> None:
+    vocab_embeddings = torch.eye(3, dtype=torch.float32)
+    token_ids = torch.tensor([[1, 2, 0, 0]], dtype=torch.long)
+    loss_mask = torch.tensor([[True, True, True, True]])
+
+    # Last PAD position intentionally points to token 1 instead of PAD.
+    x0_pred = torch.tensor(
+        [[[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]],
+        dtype=torch.float32,
+    )
+
+    low_weight = compute_token_auxiliary_terms(
+        x0_pred=x0_pred,
+        vocab_embeddings=vocab_embeddings,
+        token_ids=token_ids,
+        loss_mask=loss_mask,
+        pad_token_id=0,
+        temperature=0.1,
+        pad_suffix_weight=1.0,
+    )
+    high_weight = compute_token_auxiliary_terms(
+        x0_pred=x0_pred,
+        vocab_embeddings=vocab_embeddings,
+        token_ids=token_ids,
+        loss_mask=loss_mask,
+        pad_token_id=0,
+        temperature=0.1,
+        pad_suffix_weight=4.0,
+    )
+
+    assert float(high_weight["loss"].item()) > float(low_weight["loss"].item())
+    assert float(low_weight["pad_suffix_fraction"].item()) == 0.5
+    assert float(high_weight["pad_suffix_ce"].item()) > 0.0
